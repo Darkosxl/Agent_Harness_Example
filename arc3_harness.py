@@ -17,6 +17,8 @@ import argparse
 import os
 import random
 import sys
+import textwrap
+import time
 
 from agent import Agent
 
@@ -33,15 +35,25 @@ def grid_text(grid):
 
 
 class Viewer:
+    """Live game view + reasoning panel + pause/replay.
+
+    Keys: SPACE pause/resume (pauses the game loop too),
+    LEFT/RIGHT step through past moves while paused,
+    UP/DOWN scroll the reasoning text.
+    """
     CELL = 10
+    HISTORY_CAP = 500  # ponytail: replay buffer cap, ~60MB worst case
 
     def __init__(self):
         if os.environ.get("WAYLAND_DISPLAY"):
             # XWayland GLX is broken here; use native wayland driver
             os.environ.setdefault("SDL_VIDEODRIVER", "wayland")
         import threading
-        self.latest = None  # (frames, caption)
+        self.history = []  # (frames, caption, text)
         self.alive = True
+        self.paused = False
+        self.cursor = 0
+        self.scroll = 0
         self.lock = threading.Lock()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -53,38 +65,94 @@ class Viewer:
         side = 64 * self.CELL
         # resizable + scale-blit: tiling WMs force arbitrary window sizes;
         # a fixed-size surface there renders stride garbage
-        screen = pygame.display.set_mode((side, side), pygame.RESIZABLE)
+        screen = pygame.display.set_mode((side + 440, side), pygame.RESIZABLE)
         canvas = pygame.Surface((side, side))
+        font = pygame.font.SysFont("monospace", 13)
         clock = pygame.time.Clock()
+        drawn = -1  # newest history index whose animation already played
+
         while self.alive:
             for e in pygame.event.get():
                 if e.type == pygame.QUIT:
                     self.alive = False
                 elif e.type == pygame.VIDEORESIZE:
                     screen = pygame.display.set_mode(e.size, pygame.RESIZABLE)
+                elif e.type == pygame.KEYDOWN:
+                    if e.key == pygame.K_SPACE:
+                        self.paused = not self.paused
+                        self.cursor = len(self.history) - 1
+                        self.scroll = 0
+                    elif self.paused and e.key == pygame.K_LEFT:
+                        self.cursor = max(0, self.cursor - 1)
+                        self.scroll = 0
+                    elif self.paused and e.key == pygame.K_RIGHT:
+                        self.cursor = min(len(self.history) - 1, self.cursor + 1)
+                        self.scroll = 0
+                    elif e.key == pygame.K_UP:
+                        self.scroll = max(0, self.scroll - 5)
+                    elif e.key == pygame.K_DOWN:
+                        self.scroll += 5
+
             with self.lock:
-                job, self.latest = self.latest, None
-            if job:
-                frames, caption = job
-                pygame.display.set_caption(caption)
+                hist = list(self.history)
+            if not hist:
+                clock.tick(30)
+                continue
+
+            idx = self.cursor if self.paused else len(hist) - 1
+            idx = max(0, min(idx, len(hist) - 1))
+            frames, caption, text = hist[idx]
+
+            w, h = screen.get_size()
+            gside = min(h, w - 220)  # grid square; leave room for text panel
+            screen.fill((24, 24, 24))
+
+            def draw_grid(grid):
+                for y, row in enumerate(grid):
+                    for x, v in enumerate(row):
+                        canvas.fill(
+                            PALETTE[v & 15],
+                            (x * self.CELL, y * self.CELL, self.CELL, self.CELL))
+                screen.blit(pygame.transform.scale(canvas, (gside, gside)), (0, 0))
+
+            # play animation once for a newly arrived entry, else settled frame
+            if not self.paused and idx > drawn and len(frames) > 1:
                 for grid in frames:
-                    for y, row in enumerate(grid):
-                        for x, v in enumerate(row):
-                            canvas.fill(
-                                PALETTE[v & 15],
-                                (x * self.CELL, y * self.CELL, self.CELL, self.CELL))
-                    if len(frames) > 1:
-                        pygame.transform.scale(canvas, screen.get_size(), screen)
-                        pygame.display.flip()
-                        pygame.time.wait(60)
-            pygame.transform.scale(canvas, screen.get_size(), screen)
+                    draw_grid(grid)
+                    pygame.display.flip()
+                    pygame.time.wait(60)
+            else:
+                draw_grid(frames[-1])
+            drawn = max(drawn, idx)
+
+            # reasoning panel
+            status = caption + (f"  [PAUSED {idx + 1}/{len(hist)}]"
+                                if self.paused else "")
+            pygame.display.set_caption(status)
+            px, pw = gside + 8, max(50, w - gside - 16)
+            cols = max(10, pw // 8)
+            lines = [wl for line in ([status, ""] + text.split("\n"))
+                     for wl in (textwrap.wrap(line, cols) or [""])]
+            rows = max(1, (h - 16) // 15)
+            self.scroll = min(self.scroll, max(0, len(lines) - rows))
+            for i, line in enumerate(lines[self.scroll:self.scroll + rows]):
+                color = (255, 210, 80) if i == 0 and self.scroll == 0 else (215, 215, 215)
+                screen.blit(font.render(line, True, color), (px, 8 + i * 15))
+
             pygame.display.flip()
             clock.tick(30)
         pygame.quit()
 
-    def show(self, frames, caption):
+    def close(self):
+        self.alive = False
+        time.sleep(0.2)  # let the render thread leave pygame cleanly
+
+    def show(self, frames, caption, text=""):
         with self.lock:
-            self.latest = (frames, caption)
+            self.history.append((frames, caption, text))
+            if len(self.history) > self.HISTORY_CAP:
+                del self.history[0]
+                self.cursor = max(0, self.cursor - 1)
 
 
 def play_game(arc, gid, agent, args, viewer):
@@ -102,6 +170,8 @@ def play_game(arc, gid, agent, args, viewer):
     prev, steps = None, 0
 
     for step in range(1, args.max_steps + 1):
+        while viewer and viewer.alive and viewer.paused:
+            time.sleep(0.1)  # game halted; user is browsing the replay
         grid = obs.frame[-1]
         changed = "?" if prev is None else sum(
             a != b for ra, rb in zip(prev, grid) for a, b in zip(ra, rb))
@@ -138,8 +208,10 @@ def play_game(arc, gid, agent, args, viewer):
         print(f">> {name} {data or ''} -> {obs.state.name}, "
               f"lvl {obs.levels_completed}/{obs.win_levels}")
         if viewer:
-            viewer.show(obs.frame, f"{gid} | lvl {obs.levels_completed}/"
-                                   f"{obs.win_levels} | {obs.state.name} | step {step}")
+            viewer.show(obs.frame,
+                        f"{gid} | lvl {obs.levels_completed}/{obs.win_levels} | "
+                        f"{obs.state.name} | step {step}",
+                        f"{reply}\n\n>> played {name} {data or ''}")
         if obs.state == GameState.WIN:
             print(f"*** WIN {gid} in {step} steps ***")
             break
@@ -214,6 +286,8 @@ def main():
     sc = arc.get_scorecard()
     if sc is not None:
         print(f"aggregate score: {getattr(sc, 'score', sc)}")
+    if viewer:
+        viewer.close()
 
 
 if __name__ == "__main__":

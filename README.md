@@ -13,6 +13,7 @@ echo 'DEEPINFRA_API_KEY=your-key-here' >> .env
 .venv/bin/python arc3_harness.py --selftest
 .venv/bin/python arc3_harness.py --list
 
+# window controls: SPACE pause game, LEFT/RIGHT step through past moves, UP/DOWN scroll reasoning
 # play easiest game until finish (watch pygame window + reasoning in terminal)
 .venv/bin/python arc3_harness.py --game ft09 --max-steps 100000
 
@@ -34,3 +35,8 @@ echo 'DEEPINFRA_API_KEY=your-key-here' >> .env
 
 ```
 
+HOW TO USE
+
+- SPACE — pause. Game loop actually halts (harness waits), not just display.
+- ←/→ — while paused, step back/forward through every past move; panel shows that step's reasoning, grid shows that step's frame. Last 500 steps kept.
+- ↑/↓ — scroll long reasoning.
