@@ -4,7 +4,10 @@
 # setup
 uv venv .venv
 uv pip install --python .venv/bin/python arc-agi arcengine openai pygame
+# keys: set the one(s) for the provider you use
 echo 'CEREBRAS_API_KEY=your-key-here' > .env
+echo 'DEEPINFRA_API_KEY=your-key-here' >> .env
+# optional defaults: PROVIDER=cerebras|deepinfra, CEREBRAS_MODEL=..., DEEPINFRA_MODEL=...
 
 # sanity checks
 .venv/bin/python arc3_harness.py --selftest
@@ -19,6 +22,15 @@ echo 'CEREBRAS_API_KEY=your-key-here' > .env
 # all 25 public games
 .venv/bin/python arc3_harness.py
 
+# providers
+.venv/bin/python arc3_harness.py --game ft09 --provider cerebras   # gemma-4-31b (default)
+.venv/bin/python arc3_harness.py --game ft09 --provider deepinfra  # Qwen/Qwen3.6-27B
+
 # options
-.venv/bin/python arc3_harness.py --game vc33 --model gemma-4-31b --ctx-tokens 60000 --max-reply 800 --headless
+.venv/bin/python arc3_harness.py --game vc33 --provider deepinfra --model Qwen/Qwen3.6-27B --ctx-tokens 60000 --max-reply 800 --headless
+
+.venv/bin/python arc3_harness.py --game ft09                        # cerebras + gemma
+.venv/bin/python arc3_harness.py --game ft09 --provider deepinfra   # qwen
+
 ```
+
